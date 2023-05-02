@@ -49,11 +49,11 @@ def evaluate(criterion, net, loader, device, classes):
     return iou, loss/(length*4)
 
 def train_net(net, device, train_dataset, val_dataset, epochs, batch_size, 
-            lr, model, dir_checkpoint, img_size, classes, loss_fn, seed):
+            lr, model, dir_checkpoint, img_size, classes, loss_fn, fold):
     class_weight = 1-torch.Tensor([0.050223350000000014, 0.40162656, 0.36744026, 0.11795166, 0.06275817]).cuda()
     n_train = train_dataset.__len__()
     n_val   = val_dataset.__len__()
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=3, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=1, pin_memory=True)
 
     train_loss_list = []
@@ -120,7 +120,7 @@ def train_net(net, device, train_dataset, val_dataset, epochs, batch_size,
 
         if val_miou.mean()>best_miou:
             best_miou = val_miou.mean()
-            torch.save(net.state_dict(), f'{dir_checkpoint}{seed}_{lr}_{model}_{loss_fn}.pth')
+            torch.save(net.state_dict(), f'{dir_checkpoint}{fold}_{lr}_{model}.pth')
             logging.info(f'Checkpoint {epoch + 1} saved !')
 
     train_loss_list = np.reshape(np.array(train_loss_list),[-1,1])
@@ -129,7 +129,7 @@ def train_net(net, device, train_dataset, val_dataset, epochs, batch_size,
     loss_record = pd.DataFrame(loss_curve)
     train_iou_record = pd.DataFrame(train_iou_list)
     val_iou_record = pd.DataFrame(val_iou_list)
-    writer = pd.ExcelWriter(f'{dir_checkpoint}{seed}_{lr}_{loss_fn}_{model}_.xlsx')      
+    writer = pd.ExcelWriter(f'{dir_checkpoint}{fold}_{lr}_{model}_.xlsx')      
     loss_record.to_excel(writer, 'loss', float_format='%.8f')       
     train_iou_record.to_excel(writer, 'train_iou', float_format='%.8f')       
     val_iou_record.to_excel(writer, 'val_iou', float_format='%.8f')       
@@ -143,8 +143,6 @@ def get_args():
                         help='Number of epochs', dest='epochs')
     parser.add_argument('-l', '--learning-rate', metavar='LR', type=float, nargs='?', default=0.001,
                         help='Learning rate', dest='lr')
-    parser.add_argument('-f', '--load', dest='load', type=str, default=False,
-                        help='Load model from a .pth file')
     parser.add_argument('-b', '--batch_size', dest='batch_size', type=int, default=4,
                         help='batch size')
     parser.add_argument('--gpu', '-g', metavar='FILE', type=str, default='0',
@@ -155,7 +153,7 @@ def get_args():
                         help='dataset')
     parser.add_argument('-m', '--model', dest='model', type=str, default='UNet_e',
                         help='model')
-    parser.add_argument('-s', '--seed', dest='seed', type=str, default=34, 
+    parser.add_argument('-f', '--fold', dest='fold', type=int, default=0, 
                         help='mask')
     return parser.parse_args()
 
@@ -165,9 +163,7 @@ if __name__ == '__main__':
 
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     args = get_args()
-
-    torch.manual_seed(args.seed)
-    random.seed(args.seed)
+    print('--'*5, args.data, '--'*5)
 
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -176,19 +172,23 @@ if __name__ == '__main__':
     dir_checkpoint = 'checkpoints/'+dataset+'/'+args.model+'/'
     if not os.path.exists(dir_checkpoint):
         os.makedirs(dir_checkpoint)
+
     if args.data == 'BCSS':
-        classes = 5
-        train_dataset = BCSS('train', sample_weight=None, mask_channel=5)
-        test_dataset  = BCSS('test', sample_weight=None, mask_channel=5)
+        classes =5
+        img_size= [512,512]
+        train_dataset = BCSS('train', sample_weight=None, mask_channel=5, fold=args.fold)
+        test_dataset  = BCSS('test', sample_weight=None, mask_channel=5, fold=args.fold)
     elif args.data=='CRAG':
-        classes = 2
-        train_dataset = CRAG('train', mask_channel=2)
-        test_dataset  = CRAG('test',  mask_channel=2)
+        classes =2
+        img_size= [512,512]
+        train_dataset = CRAG('train', mask_channel=2, fold=args.fold)
+        test_dataset  = CRAG('test',  mask_channel=2, fold=args.fold)
     elif args.data=='Kumar':
         classes =2
         img_size= [400,400]
-        train_dataset = Kumar('train')
-        test_dataset  = Kumar('test')
+        train_dataset = Kumar('train', fold=args.fold)
+        test_dataset  = Kumar('test', fold=args.fold)
+
         
     net = UNet_e(n_channels=3, n_classes=classes, filters=64).cuda()
     summary(net, (3, img_size[0], img_size[1]))
@@ -197,4 +197,4 @@ if __name__ == '__main__':
     net = train_net(net=net, device=device, train_dataset= train_dataset, val_dataset=test_dataset,
                     epochs=args.epochs, batch_size=args.batch_size, lr=args.lr, model =args.model,
                     dir_checkpoint=dir_checkpoint, img_size=img_size, classes=classes, 
-                    loss_fn=args.cost, seed=args.seed)
+                    loss_fn=args.cost, fold=args.fold)

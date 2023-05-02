@@ -1,0 +1,23 @@
+#!/bin/bash
+#SBATCH --partition=gpu
+#SBATCH --time=24:00:00
+#SBATCH --ntasks=1
+#SBATCH --gres=gpu:1
+#SBATCH -N 1 -n 8
+#SBATCH --out=BCSS_CENet_2.out
+
+# python -u train_unet_hist.py -g 0 -b 6 -d CRAG -f 4
+# python -u train_unet_hist.py -g 0 -b 8 -d Kumar -f 4
+# python -u train_unet_hist.py -g 0 -b 24 -d BCSS -f 4
+
+# python -u train_unet_hist.py -g 0 -b 4 -d CRAG -m CENet -f 4
+python -u train_unet_hist.py -g 0 -b 4 -d BCSS -m CENet -f 2
+
+# python -u train_unet_e_hist.py -g 0 -b 4 -d Kumar -f 4
+# python -u train_unet_e_hist.py -g 0 -b 2 -d CRAG -f 2
+
+# python -u train_unet_pp_hist.py -g 0 -b 2 -d BCSS -f 0
+# python -u train_unet_pp_hist.py -g 0 -b 2 -d Kumar -f 1
+# python -u train_unet_pp_hist.py -g 0 -b 2 -d Kumar -f 2
+# python -u train_unet_pp_hist.py -g 0 -b 2 -d Kumar -f 3
+# python -u train_unet_pp_hist.py -g 0 -b 2 -d Kumar -f 4

@@ -92,27 +92,29 @@ def mapping(gt, channels):
     return mask
 
 class Kumar(Dataset):
-    def __init__(self, image_set='train', sample_weight=None, mask_channel=2):
+    def __init__(self, image_set='train', sample_weight=None, mask_channel=2, fold=0):
         self.sample_weight=sample_weight
         self._image_set = image_set
         self.mask_channel = mask_channel
 
+        dataset = np.load("/scratch/yy3u19/DataSets/dataset.npy", allow_pickle=True).item()
+        num_imgs = len(dataset['Kumar_img'])
+        num_per_fold = num_imgs//5
+        idx = [i for i in range(num_imgs)]
+        test_idx = [i for i in range(fold*num_per_fold, (fold+1)*num_per_fold)] if fold<4 else [i for i in range(fold*num_per_fold, num_imgs)]
+        train_idx= [item for item in idx if item not in test_idx]
         if self._image_set == 'train':
-            self._image_names = glob.glob('/scratch/yy3u19/DataSets/Kumar/Train_patch/*')
-            self._mask_names = glob.glob('/scratch/yy3u19/DataSets/Kumar/Train_patch_mask/*')
+            self._image_names= np.array(dataset['Kumar_img'])[train_idx]       
+            self._mask_names = np.array(dataset['Kumar_mask'])[train_idx]
+            # self._image_names = glob.glob('/scratch/yy3u19/DataSets/CRAG/TRAIN/img/*png')
+            # self._mask_names = glob.glob('/scratch/yy3u19/DataSets/CRAG/TRAIN/labelcol/*png')
 
         elif self._image_set == 'test':
-            # self._image_names = [img for img in glob.iglob(image_fp) if os.path.basename(img) in valids]
-            # self._image_names= glob.glob('/scratch/yy3u19/DataSets/Kumar/Test_img/*png')
-            # self._mask_names= glob.glob('/scratch/yy3u19/DataSets/Kumar/Test_mask/*png')
-            self._image_names= glob.glob('/scratch/yy3u19/DataSets/Kumar/Test_patch/*png')
-            self._mask_names= glob.glob('/scratch/yy3u19/DataSets/Kumar/Test_patch_mask/*png')
-
+            self._image_names= np.array(dataset['Kumar_img'])[test_idx]       
+            self._mask_names = np.array(dataset['Kumar_mask'])[test_idx]
 
         else:
             raise RuntimeError('image set should only be train or set')
-        self._image_names.sort()
-        self._mask_names.sort()
 
         self.MEAN = (0.6519, 0.5859, 0.7658)
         self.STD = (0.1911, 0.2308, 0.2018)
@@ -130,8 +132,8 @@ class Kumar(Dataset):
         return len(self._image_names)
 
     def __getitem__(self, index):
-        image = cv2.imread(self._image_names[index], flags=1)
-        mask  = cv2.imread(self._mask_names[index], flags=0)//255
+        image = cv2.imread('/scratch/yy3u19/DataSets/'+self._image_names[index], flags=1)
+        mask  = cv2.imread('/scratch/yy3u19/DataSets/'+self._mask_names[index], flags=0)//255
         # mask  = np.expand_dims(mask,axis=0)
         mask  = mapping(mask, self.mask_channel)
 
@@ -139,9 +141,9 @@ class Kumar(Dataset):
         mask = torch.from_numpy(mask).type(torch.float32)
         if self._image_set=='train':
             img, mask = KumarDataAug(img, mask)
-        elif self._image_set=='test':
-            img = F.center_crop(img, (992,992))
-            mask = F.center_crop(mask, (992,992))
+        # elif self._image_set=='test':
+        #     img = F.center_crop(img, (992,992))
+        #     mask = F.center_crop(mask, (992,992))
 
         if self.sample_weight==None:
             return {
@@ -219,18 +221,28 @@ class GlaS(Dataset):
             }
 
 class BCSS(Dataset):
-    def __init__(self, image_set='train', sample_weight=None, mask_channel=5):
+    def __init__(self, image_set='train', sample_weight=None, mask_channel=5,fold=0):
         self.sample_weight=sample_weight
         self._image_set = image_set
         self.mask_channel = mask_channel
+
+
+        dataset = np.load("/scratch/yy3u19/DataSets/dataset.npy", allow_pickle=True).item()
+        num_imgs = len(dataset['BCSS_img'])
+        num_per_fold = num_imgs//5
+        idx = [i for i in range(num_imgs)]
+        test_idx = [i for i in range(fold*num_per_fold, (fold+1)*num_per_fold)] if fold<4 else [i for i in range(fold*num_per_fold, num_imgs)]
+        train_idx= [item for item in idx if item not in test_idx]
         if self._image_set == 'train':
-            self._image_names = glob.glob('/scratch/yy3u19/DataSets/BCSS/train_imgs/*png')
-            self._mask_names = glob.glob('/scratch/yy3u19/DataSets/BCSS/train_gts/*png')
+            self._image_names= np.array(dataset['BCSS_img'])[train_idx]       
+            self._mask_names = np.array(dataset['BCSS_mask'])[train_idx]
+            # self._image_names = glob.glob('/scratch/yy3u19/DataSets/CRAG/TRAIN/img/*png')
+            # self._mask_names = glob.glob('/scratch/yy3u19/DataSets/CRAG/TRAIN/labelcol/*png')
 
         elif self._image_set == 'test':
-            # self._image_names = [img for img in glob.iglob(image_fp) if os.path.basename(img) in valids]
-            self._image_names= glob.glob('/scratch/yy3u19/DataSets/BCSS/final/test_imgs/*png')
-            self._mask_names= glob.glob('/scratch/yy3u19/DataSets/BCSS/final/test_gts/*png')
+            self._image_names= np.array(dataset['BCSS_img'])[test_idx]       
+            self._mask_names = np.array(dataset['BCSS_mask'])[test_idx]
+
 
         elif self._image_set == 'evaluate':
             # self._image_names = [img for img in glob.iglob(image_fp) if os.path.basename(img) in valids]
@@ -238,8 +250,8 @@ class BCSS(Dataset):
             self._mask_names= glob.glob('/scratch/yy3u19/DataSets/BCSS/new_gts/test/*png')
         else:
             raise RuntimeError('image set should only be train or set')
-        self._image_names.sort()
-        self._mask_names.sort()
+        # self._image_names.sort()
+        # self._mask_names.sort()
         self.MEAN = (0.7258, 0.6042, 0.8183)
         self.STD  = (0.1708, 0.2302, 0.1744)
 
@@ -256,8 +268,8 @@ class BCSS(Dataset):
     def __getitem__(self, index):
         assert(self._image_names[index].split('/')[-1]==self._mask_names[index].split('/')[-1]), self._image_names[index].split('/')[-1]+'--'+self._mask_names[index].split('/')[-1]
 
-        image = cv2.imread(self._image_names[index], flags=1)
-        mask  = cv2.imread(self._mask_names[index], flags=0)
+        image = cv2.imread('/scratch/yy3u19/DataSets/'+self._image_names[index], flags=1)
+        mask  = cv2.imread('/scratch/yy3u19/DataSets/'+self._mask_names[index], flags=0)
         mask  = mapping(mask, self.mask_channel)
 
         img  = self.transforms(image)
@@ -265,6 +277,10 @@ class BCSS(Dataset):
 
         if self._image_set == 'train':
             img, mask = DataAug(img, mask)
+        elif  self._image_set == 'test':
+            img = F.center_crop(img, (512,512))
+            mask = F.center_crop(mask, (512,512))
+            # print('img:',img.shape,'mask:',mask.shape)
 
         if self.sample_weight==None:
             return {
@@ -282,22 +298,33 @@ class BCSS(Dataset):
             }
 
 class CRAG(Dataset):
-    def __init__(self, image_set='train', sample_weight=None, mask_channel=2):
+    def __init__(self, image_set='train', sample_weight=None, mask_channel=2, fold=0):
         self.sample_weight=sample_weight
         self._image_set = image_set
         self.mask_channel = mask_channel
+        
+        dataset = np.load("/scratch/yy3u19/DataSets/dataset.npy", allow_pickle=True).item()
+        num_imgs = len(dataset['CRAG_img'])
+        num_per_fold = num_imgs//5
+        idx = [i for i in range(num_imgs)]
+        test_idx = [i for i in range(fold*num_per_fold, (fold+1)*num_per_fold)] if fold<4 else [i for i in range(fold*num_per_fold, num_imgs)]
+        train_idx= [item for item in idx if item not in test_idx]
         if self._image_set == 'train':
-            self._image_names = glob.glob('/scratch/yy3u19/DataSets/CRAG/TRAIN/img/*png')
-            self._mask_names = glob.glob('/scratch/yy3u19/DataSets/CRAG/TRAIN/labelcol/*png')
+            self._image_names= np.array(dataset['CRAG_img'])[train_idx]       
+            self._mask_names = np.array(dataset['CRAG_mask'])[train_idx]
+            # self._image_names = glob.glob('/scratch/yy3u19/DataSets/CRAG/TRAIN/img/*png')
+            # self._mask_names = glob.glob('/scratch/yy3u19/DataSets/CRAG/TRAIN/labelcol/*png')
 
         elif self._image_set == 'test':
-            self._image_names= glob.glob('/scratch/yy3u19/DataSets/CRAG/TEST/img/*png')
-            self._mask_names= glob.glob('/scratch/yy3u19/DataSets/CRAG/TEST/labelcol/*png')
+            self._image_names= np.array(dataset['CRAG_img'])[test_idx]       
+            self._mask_names = np.array(dataset['CRAG_mask'])[test_idx]
+            # self._image_names= glob.glob('/scratch/yy3u19/DataSets/CRAG/TEST/img/*png')
+            # self._mask_names= glob.glob('/scratch/yy3u19/DataSets/CRAG/TEST/labelcol/*png')
 
         else:
             raise RuntimeError('image set should only be train or set')
-        self._image_names.sort()
-        self._mask_names.sort()
+        # self._image_names.sort()
+        # self._mask_names.sort()
         self.MEAN = (0.8568, 0.7219, 0.8302)
         self.STD  = (0.0935, 0.1676, 0.1277)
 
@@ -315,8 +342,8 @@ class CRAG(Dataset):
         # print(self._image_names[index], self._mask_names[index])
         assert(self._image_names[index].split('/')[-1]==self._mask_names[index].split('/')[-1]), self._image_names[index].split('/')[-1]+'--'+self._mask_names[index].split('/')[-1]
 
-        image = cv2.imread(self._image_names[index], flags=1)
-        mask  = (cv2.imread(self._mask_names[index], flags=0)>1).astype(np.uint8)
+        image = cv2.imread('/scratch/yy3u19/DataSets/'+self._image_names[index], flags=1)
+        mask  = (cv2.imread('/scratch/yy3u19/DataSets/'+self._mask_names[index], flags=0)>1).astype(np.uint8)
         mask  = mapping(mask, self.mask_channel)
 
         img  = self.transforms(image)

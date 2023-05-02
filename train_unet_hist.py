@@ -16,6 +16,7 @@ from utils.loss import *
 from utils.dataset import *
 import torch.nn.functional as F
 from torchsummary import summary
+from unet.unet_model import CENet
 from unet.unet_pp import UNet2Plus
 import matplotlib.ticker as ticker
 from torch.autograd import Variable
@@ -50,7 +51,7 @@ def evaluate(criterion, net, loader, device, classes):
     return miou, loss/length
 
 def train_net(net, device, train_dataset, val_dataset, epochs, batch_size, lr, model, 
-                dir_checkpoint, loss_fn, img_size, classes, seed):
+                dir_checkpoint, loss_fn, img_size, classes, fold):
     class_weight = 1-torch.Tensor([0.050223350000000014, 0.40162656, 0.36744026, 0.11795166, 0.06275817]).cuda()
     n_train = train_dataset.__len__()
     n_val   = val_dataset.__len__()
@@ -72,6 +73,7 @@ def train_net(net, device, train_dataset, val_dataset, epochs, batch_size, lr, m
         Validation size: {n_val}
         Device:          {device.type}
         model name:      {model}
+        Fold:            {fold}
     ''')
 
     optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=1e-4)
@@ -118,7 +120,7 @@ def train_net(net, device, train_dataset, val_dataset, epochs, batch_size, lr, m
 
         if val_miou.mean()>best_miou:
             best_miou = val_miou.mean()
-            torch.save(net.state_dict(), dir_checkpoint + f'{seed}_{lr}_{model}_{loss_fn}.pth')
+            torch.save(net.state_dict(), dir_checkpoint + f'{fold}_{batch_size}_{lr}_{model}.pth')
             logging.info(f'Checkpoint {epoch + 1} saved !')  
             
     train_loss_list = np.reshape(np.array(train_loss_list),[-1,1])
@@ -131,7 +133,7 @@ def train_net(net, device, train_dataset, val_dataset, epochs, batch_size, lr, m
     loss_record = pd.DataFrame(loss_curve)
     iou_record = pd.DataFrame(iou_curve)
 
-    writer = pd.ExcelWriter(dir_checkpoint+f'{seed}_{lr}_{model}_{loss_fn}.xlsx')      
+    writer = pd.ExcelWriter(dir_checkpoint+f'{fold}_{batch_size}_{lr}_{model}.xlsx')      
     loss_record.to_excel(writer, 'loss', float_format='%.8f')       
     iou_record.to_excel(writer, 'iou', float_format='%.8f')
     writer.save()
@@ -155,7 +157,7 @@ def get_args():
                         help='dataset')
     parser.add_argument('-c', '--cost', dest='cost', type=str, default='ce',
                         help='dataset')
-    parser.add_argument('-s', '--seed', dest='seed', type=str, default=34, 
+    parser.add_argument('-f', '--fold', dest='fold', type=int, default=0, 
                         help='mask')
     return parser.parse_args()
 
@@ -163,8 +165,8 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     args = get_args()
 
-    torch.manual_seed(args.seed)
-    random.seed(args.seed)
+    # torch.manual_seed(args.seed)
+    # random.seed(args.seed)
 
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.n_gpu)
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -177,20 +179,24 @@ if __name__ == '__main__':
     if args.data == 'BCSS':
         classes =5
         img_size= [512,512]
-        train_dataset = BCSS('train', sample_weight=None, mask_channel=5)
-        test_dataset  = BCSS('test', sample_weight=None, mask_channel=5)
+        train_dataset = BCSS('train', sample_weight=None, mask_channel=5, fold=args.fold)
+        test_dataset  = BCSS('test', sample_weight=None, mask_channel=5, fold=args.fold)
     elif args.data=='CRAG':
         classes =2
         img_size= [512,512]
-        train_dataset = CRAG('train', mask_channel=2)
-        test_dataset  = CRAG('test',  mask_channel=2)
+        train_dataset = CRAG('train', mask_channel=2, fold=args.fold)
+        test_dataset  = CRAG('test',  mask_channel=2, fold=args.fold)
     elif args.data=='Kumar':
         classes =2
         img_size= [400,400]
-        train_dataset = Kumar('train')
-        test_dataset  = Kumar('test')
+        train_dataset = Kumar('train', fold=args.fold)
+        test_dataset  = Kumar('test', fold=args.fold)
 
-    net = UNet(n_channels=3, n_classes=classes, filters=64, bilinear=False).cuda()
+    if args.model =='UNet':
+        net = UNet(n_channels=3, n_classes=classes, filters=64, bilinear=False).cuda()
+    elif args.model =='CENet':
+        net = CENet(n_channels=3, n_classes=classes, filters=64, bilinear=False).cuda()
+
     summary(net, (3, img_size[0], img_size[1]))
     net.to(device=device)
 
@@ -201,5 +207,5 @@ if __name__ == '__main__':
     net = train_net(net=net, device=device, train_dataset= train_dataset, val_dataset=test_dataset,
                     epochs=args.epochs, batch_size=args.batch_size, lr=args.lr, model =args.model,
                     dir_checkpoint=dir_checkpoint, loss_fn=args.cost, img_size=img_size, 
-                    classes=classes, seed=args.seed)
+                    classes=classes, fold=args.fold)
     # predict_img(net, val_dataset, device)
