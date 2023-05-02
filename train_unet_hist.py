@@ -14,6 +14,7 @@ from dice_loss import *
 from torch import optim
 from utils.loss import *
 from utils.dataset import *
+import torch.distributed as dist
 import torch.nn.functional as F
 from torchsummary import summary
 from unet.unet_model import CENet
@@ -23,21 +24,22 @@ from torch.autograd import Variable
 from matplotlib import pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader, random_split
+from torch.nn.parallel import DistributedDataParallel as DPP
 
-def evaluate(criterion, net, loader, device, classes):
+def evaluate(criterion, net, loader, classes):
     net.eval()
     metrics = Metrics(classes)
     iou = 0
     loss = 0
     length = 0
-
+    pixels = torch.tensor(0).cuda()
     for batch in loader:
         with torch.no_grad():
-            imgs = Variable(batch['image'].to(device=device, dtype=torch.float32))
-            true_masks = Variable(batch['mask'].to(device=device, dtype=torch.long))
+            imgs = batch['image'].cuda(f'cuda:{dist.get_rank()}') #Variable(batch['image'].to(device=device, dtype=torch.float32))
+            true_masks = batch['mask'].cuda(f'cuda:{dist.get_rank()}') #Variable(batch['mask'].to(device=device, dtype=torch.long))
             masks_pred = net(imgs)
             temp_loss = criterion(masks_pred, torch.argmax(true_masks, dim=1))
-            loss += temp_loss.item()
+            loss += temp_loss
             preds = F.softmax(masks_pred,dim=1)
             preds = torch.argmax(preds, dim=1).squeeze(1)
             if len(true_masks.size())==4:
@@ -45,24 +47,39 @@ def evaluate(criterion, net, loader, device, classes):
             masks = true_masks.view(-1)
             preds = preds.view(-1)
             metrics.add(preds, masks)
-            length += 1
-    miou = metrics.iou(average=False).cpu().numpy()
-    miou = np.reshape(miou,[1,-1])
-    return miou, loss/length
+            # length += 1
+            pixels += masks_pred.shape[0]*masks_pred.shape[2]*masks_pred.shape[3]
+    # miou = metrics.iou(average=False).cpu().numpy()
+    # miou = np.reshape(miou,[1,-1])
+    # return miou, loss/length
+    
+    cm = metrics._confusion_matrix
+    torch.distributed.reduce(cm, 0)#op=torch.distributed.ReduceOp.SUM)
+    torch.distributed.reduce(loss, 0)# op=torch.distributed.ReduceOp.SUM)
+    torch.distributed.reduce(pixels, 0)# op=torch.distributed.ReduceOp.SUM)
+    return cm, loss, pixels
 
 def train_net(net, device, train_dataset, val_dataset, epochs, batch_size, lr, model, 
                 dir_checkpoint, loss_fn, img_size, classes, fold):
     class_weight = 1-torch.Tensor([0.050223350000000014, 0.40162656, 0.36744026, 0.11795166, 0.06275817]).cuda()
     n_train = train_dataset.__len__()
     n_val   = val_dataset.__len__()
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
-    train_loss_list = []
-    val_loss_list  = []
+
+    train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, drop_last=False)
+    val_sampler   = torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False, drop_last=False)
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, \
+                              num_workers=4, pin_memory=False, sampler=train_sampler)
+    val_loader   = DataLoader(val_dataset, batch_size=batch_size, \
+                              num_workers=4, pin_memory=False, sampler=val_sampler)
+
+    # train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    # val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
     train_iou_list = np.empty([0,classes])
     val_iou_list  = np.empty([0,classes])
-
+    train_loss_list = []
+    val_loss_list = []
     global_step = 0
 
     logging.info(f'''Starting training:
@@ -84,9 +101,9 @@ def train_net(net, device, train_dataset, val_dataset, epochs, batch_size, lr, m
         print('using CE loss')
         # criterion = SoftCrossEntropy(reduction='mean').cuda()
         if 'BCSS' in dir_checkpoint:
-            criterion = nn.CrossEntropyLoss(weight=class_weight, reduction='mean').cuda()
+            criterion = nn.CrossEntropyLoss(weight=class_weight, reduction='sum').cuda()
         else:
-            criterion = nn.CrossEntropyLoss(reduction='mean').cuda()
+            criterion = nn.CrossEntropyLoss(reduction='sum').cuda()
 
     train_scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, steps_per_epoch=len(train_loader), epochs=epochs)
     best_miou=0
@@ -95,8 +112,8 @@ def train_net(net, device, train_dataset, val_dataset, epochs, batch_size, lr, m
         net.train()
         train_loss = 0
         for batch in train_loader:
-            imgs = Variable(batch['image'].to(device=device, dtype=torch.float32))
-            true_masks = Variable(batch['mask'].to(device=device, dtype=torch.long))
+            imgs = batch['image'].cuda() #.to(device=device, dtype=torch.float32))
+            true_masks = batch['mask'].cuda() #.to(device=device, dtype=torch.long))
             masks_pred = net(imgs)
             optimizer.zero_grad()
             # print('mask', torch.unique(torch.argmax(true_masks, dim=1)))
@@ -107,8 +124,58 @@ def train_net(net, device, train_dataset, val_dataset, epochs, batch_size, lr, m
             optimizer.step()
             train_scheduler.step()
 
-        train_miou, train_loss = evaluate(criterion, net, train_loader, device, classes)
-        val_miou, val_loss = evaluate(criterion, net, val_loader, device, classes)
+        train_cm, train_loss, train_pixels = evaluate(criterion, net, train_loader, classes)
+        val_cm, val_loss, val_pixels       = evaluate(criterion, net, val_loader, classes)
+
+        # print('----------------',train_cm.sum(), val_cm.sum(),'----------------')
+
+        # torch.distributed.reduce(train_cm, 0, op=dist.ReduceOp.SUM)#op=torch.distributed.ReduceOp.SUM)
+        # torch.distributed.reduce(train_loss, 0, op=dist.ReduceOp.SUM)# op=torch.distributed.ReduceOp.SUM)
+        # torch.distributed.reduce(val_cm, 0, op=dist.ReduceOp.SUM)#op=torch.distributed.ReduceOp.SUM)
+        # torch.distributed.reduce(val_loss, 0, op=dist.ReduceOp.SUM)# op=torch.distributed.ReduceOp.SUM)
+        
+        if dist.get_rank()==0:
+            # print('----------------',train_cm.sum(), val_cm.sum(), train_pixels, val_pixels, '----------------')
+            train_miou = iou(train_cm, False)
+            val_miou   = iou(val_cm, False)
+            train_loss = train_loss.item()/(n_train*img_size[0]*img_size[1])
+            val_loss = val_loss.item()/(n_val*img_size[0]*img_size[1])
+
+            e_end=time.time()
+            print(f'Epoch:{epoch+1}/{epochs}, time:{round(e_end-e_start, 1)},\
+                    Train_Loss:, {round(train_loss,4)}, Test_Loss: {round(val_loss,4)}, \
+                    Train_mIoU:, {round(train_miou.mean().item(),4)}, Test_mIoU: {round(val_miou.mean().item(),4)}')
+            # print(f'train iou: {train_miou}, test iou: {val_miou}')
+            train_loss_list.append(train_loss)
+            val_loss_list.append(val_loss)
+            train_iou_list=np.concatenate([train_iou_list, train_miou], axis=0)
+            val_iou_list=np.concatenate([val_iou_list, val_miou], axis=0)
+
+            if val_miou.mean()>best_miou:
+                best_miou = val_miou.mean()
+                torch.save(net.state_dict(), dir_checkpoint + f'{fold}_{batch_size}_{lr}_{model}.pth')
+                logging.info(f'Checkpoint {epoch + 1} saved !')  
+    if dist.get_rank()==0:    
+        train_loss_list = np.reshape(np.array(train_loss_list),[-1,1])
+        val_loss_list   = np.reshape(np.array(val_loss_list),[-1,1])
+
+
+        loss_curve = np.concatenate([train_loss_list, val_loss_list], axis=1)
+        iou_curve = np.concatenate([train_iou_list, val_iou_list], axis=1)
+
+        loss_record = pd.DataFrame(loss_curve)
+        iou_record = pd.DataFrame(iou_curve)
+        writer = pd.ExcelWriter(dir_checkpoint+f'{fold}_{batch_size}_{lr}_{model}.xlsx')      
+
+        loss_record.to_excel(writer, 'loss', float_format='%.8f')       
+        iou_record.to_excel(writer, 'iou', float_format='%.8f')
+        writer.save()
+
+        writer.close()
+        return net
+'''
+        train_miou, train_loss = evaluate(criterion, net, train_loader, classes)
+        val_miou, val_loss = evaluate(criterion, net, val_loader, classes)
         
         e_end=time.time()
         print(f'Epoch:{epoch+1}/{epochs}, time:{round(e_end-e_start, 1)}, Train_Loss:, {round(train_loss,4)}, Test_Loss: {round(val_loss,4)}, Train_mIoU:, {round(train_miou.mean(),4)}, Test_mIoU: {round(val_miou.mean(),4)}')
@@ -140,7 +207,7 @@ def train_net(net, device, train_dataset, val_dataset, epochs, batch_size, lr, m
 
     writer.close()
     return net
-
+'''
 def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
     parser.add_argument('-e', '--epochs', metavar='E', type=int, default=70,
@@ -151,14 +218,14 @@ def get_args():
                         help='batch size')
     parser.add_argument('-m', '--model', dest='model', type=str, default='UNet',
                         help='model')
-    parser.add_argument('-g', '--gpu', dest='n_gpu', type=int, default=0,
-                        help='number of gpus')
     parser.add_argument('-d', '--data', dest='data', type=str, default='BCSS',
                         help='dataset')
     parser.add_argument('-c', '--cost', dest='cost', type=str, default='ce',
                         help='dataset')
     parser.add_argument('-f', '--fold', dest='fold', type=int, default=0, 
                         help='mask')
+    parser.add_argument('--local_rank', default=-1, type=int,
+                        help='node rank for distributed training')
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -168,13 +235,16 @@ if __name__ == '__main__':
     # torch.manual_seed(args.seed)
     # random.seed(args.seed)
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.n_gpu)
+    # os.environ["CUDA_VISIBLE_DEVICES"] = str(args.n_gpu)
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Using device {device}')
     dataset = args.data
     dir_checkpoint = 'checkpoints/'+dataset+'/'+args.model+'/'
     if not os.path.exists(dir_checkpoint):
         os.makedirs(dir_checkpoint)
+
+    dist.init_process_group(backend='nccl')
+    torch.cuda.set_device(args.local_rank)
 
     if args.data == 'BCSS':
         classes =5
@@ -198,7 +268,8 @@ if __name__ == '__main__':
         net = CENet(n_channels=3, n_classes=classes, filters=64, bilinear=False).cuda()
 
     summary(net, (3, img_size[0], img_size[1]))
-    net.to(device=device)
+    net = torch.nn.parallel.DistributedDataParallel(net, device_ids=[args.local_rank])
+
 
     # if args.load:
     #     net.load_state_dict(torch.load(args.load, map_location=device))

@@ -6,6 +6,14 @@ import torch
 from torchmetrics import ConfusionMatrix
 
 
+def iou(cm, average=True):
+    iou = torch.diagonal(cm, 0) / (cm.sum(dim=1) + cm.sum(dim=0) - torch.diagonal(cm, 0) + 1e-15)
+    if average:
+        iou = iou.mean().item()
+        return iou.cpu()
+    else:
+        return iou.cpu().numpy().reshape([1,-1])
+        
 class Metrics:
 
     def __init__(self, class_num, ignore_index=set([None])):
